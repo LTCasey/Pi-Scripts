@@ -10,58 +10,81 @@ import (
 	"periph.io/x/host/v3/rpi"
 )
 
-// Define pins
-var (
-	triggerPin = rpi.P1_11 // GPIO 17
-	echoPin    = rpi.P1_13 // GPIO 27
+const (
+	soundSpeed          = 0.0343                // Sound speed in cm/µs
+	pulseDuration       = 10 * time.Microsecond // Pulse duration for trigger
+	measurementInterval = 1 * time.Second       // Interval between measurements
 )
 
-// Sound speed in cm/µs
-const soundSpeed = 0.0343
+var (
+	triggerPin gpio.PinOut // GPIO pin connected to the trigger
+	echoPin    gpio.PinIn  // GPIO pin connected to the echo
+)
 
-func main() {
+func initPins() error {
+
 	// Initialize periph library
 	if _, err := host.Init(); err != nil {
-		log.Fatalf("failed to initialize periph: %v", err)
+		return fmt.Errorf("failed to initialize periph: %w", err)
 	}
 
 	// Configure trigger as output and echo as input
-	trigger := triggerPin.(gpio.PinOut) // Cast to correct type
-	echo := echoPin.(gpio.PinIn)        // Cast to correct type
-	trigger.Out(gpio.Low)
+	triggerPin, ok := rpi.P1_11.(gpio.PinOut) // GPIO 17
+	if !ok {
+		return fmt.Errorf("failed to cast P1_11 to gpio.PinOut")
+	}
+	echoPin, ok = rpi.P1_13.(gpio.PinIn) // GPIO 27
+	if !ok {
+		return fmt.Errorf("failed to cast P1_13 to gpio.PinIn")
+	}
 
-	// Infinite loop to measure distance
+	triggerPin.Out(gpio.Low)
+	return nil
+}
+
+func main() {
+	if err := initPins(); err != nil {
+		log.Fatalf("%v", err)
+	}
+
 	for {
-		distance, err := measureDistance(trigger, echo)
+		distance, err := measureDistance()
 		if err != nil {
 			fmt.Printf("Error measuring distance: %v\n", err)
 		} else {
 			fmt.Printf("Distance to water surface: %.2f cm\n", distance)
 		}
 
-		// Sleep for a second between measurements
-		time.Sleep(1 * time.Second)
+		time.Sleep(measurementInterval)
 	}
 }
 
 // measureDistance triggers a pulse and measures the echo time
-func measureDistance(trigger gpio.PinOut, echo gpio.PinIn) (float64, error) {
+func measureDistance() (float64, error) {
 	// Send 10µs pulse to trigger
-	trigger.Out(gpio.High)
-	time.Sleep(10 * time.Microsecond)
-	trigger.Out(gpio.Low)
+	triggerPin.Out(gpio.High)
+	time.Sleep(pulseDuration)
+	triggerPin.Out(gpio.Low)
+
+	start := time.Now()
+	var duration int64
 
 	// Wait for echo to go high
-	start := time.Now()
-	for echo.Read() == gpio.Low {
-		start = time.Now()
+	for echoPin.Read() == gpio.Low {
+		if time.Since(start) > measurementInterval {
+			return 0, fmt.Errorf("timeout waiting for echo")
+		}
 	}
 
 	// Measure time until echo goes low again
-	for echo.Read() == gpio.High {
+	start = time.Now()
+	for echoPin.Read() == gpio.High {
+		if time.Since(start) > measurementInterval {
+			return 0, fmt.Errorf("timeout waiting for echo to go low")
+		}
 	}
+	duration = time.Since(start).Microseconds()
 
-	duration := time.Since(start).Microseconds()
 	if duration == 0 {
 		return 0, fmt.Errorf("no pulse detected")
 	}
